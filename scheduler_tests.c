@@ -11,7 +11,6 @@
 
 // TODO: Turn on instrumentation for profiling optimizations
 #define SCHEDULER_PROFILE
-// static int scheduler_profile_steps;
 
 //
 // Test harness conveniences
@@ -250,7 +249,7 @@ static void _test_scheduler_remove_last_fizz_callback(struct scheduler_work *uni
   }
   test(the_time_in_millis <= 15);
 }
-static void _test_scheduler_remove_last_buzz_callback(struct scheduler_work *unit) {
+static void _test_scheduler_remove_last_buzz_callback(struct scheduler_work *unit __attribute__((unused))) {
   test(false);
 }
 static void test_scheduler_remove_last(void) {
@@ -316,15 +315,21 @@ static unsigned long millis(void) {
 // White box tests
 // ///////////////////////////////////////////////////////////////////////// //
 
-static void test_scheduler_time_is_less_than_time(void) {
-  test(_scheduler_time_is_less_than_time(0, 20));
-  test(!_scheduler_time_is_less_than_time(20, 0));
-  test(_scheduler_time_is_less_than_time((unsigned long)(-10), 10));
-  test(!_scheduler_time_is_less_than_time(10, (unsigned long)(-10)));
+static void test_time_lt_time(void) {
+  test(!_time_lt_time(0, 0));
+  test(_time_lt_time(0, 20));
+  test(!_time_lt_time(20, 0));
+  test(_time_lt_time((unsigned long)(-10), 10));
+  test(!_time_lt_time(10, (unsigned long)(-10)));
 }
 
 //
-// TODO: explicitly test 3 work units with the same interval always tail-insert
+// TODO: test that 3 work units with the same interval always tail-insert
+//
+
+
+//
+// TODO: test that head.delay_millis results in optimized insertions with N 20ms work units and a single 1000ms work unit.
 //
 
 // ///////////////////////////////////////////////////////////////////////// //
@@ -344,7 +349,7 @@ int main() {
   test_scheduler_fb();
   test_scheduler_ff();
   test_scheduler_starve();
-  test_scheduler_time_is_less_than_time();
+  test_time_lt_time();
   test_scheduler_remove_last();
   
   printf("\n%d failures in %d checks\n", failures, tests);

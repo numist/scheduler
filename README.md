@@ -4,27 +4,13 @@ A simple, obviously-named work scheduler for microcontrollers.
 
 ***
 
-## Features/foibles
+## Features/Foibles
 
-Memory used by work units is provided by its clients, so there is no global scheduler table. Using a linked list reduces memory movement caused by insertions/removals from the middle of the schedule. To reduce memory usage, the list is singly-linked.
+Memory used by work units is provided by its clients, so there is no global scheduler table. Using a linked list reduces memory movement caused by insertions/removals from the middle of the schedule. A linked list does require more memory than a slab of work units (the link pointers); to mitigate this slightly, the list is singly-linked.
 
-Callbacks take one parameter: the work unit itself. This allows the work unit structure to save a `void *`. Enclosing the work unit in your own data structure allows you to materialize it with a single pointer subtraction, using the result of `offsetof`.
+Callbacks take one parameter: the work unit itself. This allows the work unit structure to save a `void *` for the conventional context parameter. Enclosing the work unit in your own data structure allows you to materialize it with a single pointer subtraction, using the result of `offsetof`.
 
 The schedule is ordered by call schedule, so running a work unit is O(1), and a work unit removing itself from inside its callback is also O(1). The scheduler includes a tail-insertion optimization, so insertions also cost O(1) when all work units have the same time interval. This means that the algorithmic complexity of running work units is constant time in the ideal case. The worst case complexity for insertion and removal is O(n).
-
-<!--
-
-Free memory available:
-  * head->delay_milis
-  * head->fire_next
-
-Potential future optimizations:
-
-Allow client to hint at the common interval size so the tail-insertion optimization can be repurposed for common mid-insertions.
-  * Memory cost: 0 (can use head->delay_millis to store the mid interval limit)
-  * Pitfalls: tail-insertion optimization currently assumes tail->later = NULL
-
--->
 
 ## Dependencies
 
@@ -47,14 +33,16 @@ This library can be used as-is on the Arduino platform; `millis` and `delay` are
 
 If you prefer to see actual code using the library, check out the unit tests.
 
-### Debugging
+### Gotchas/Debugging
 
-It is illegal to schedule a work unit twice, or to remove an unscheduled work unit. In the interest of speed, the library assumes such situations will never occur and may react in unwanted ways when they do. Defining the preprocessor macro `SCHEDULER_STRICT` enables checks that will trap when illegal conditions are detected, at the expense of performance.
+It is illegal to schedule a work unit twice, or to remove an unscheduled work unit. Checking for these conditions is slow, so the library assumes such situations will never occur and will react in unwanted ways when they do. Defining the preprocessor macro `SCHEDULER_STRICT` enables checks that will trap when illegal conditions are detected, at the expense of performance.
+
+Modifying a work unit while it is in the schedule is also illegal and will result in all kinds of unwanted behaviour, including (but not limited to) call starvation. The same applies to modifying the private members of `struct scheduler_work`. There is no built-in mechanism to help detect this condition.
 
 ## Testing
 
 The `scheduler_tests.c` file defines a standalone application that runs the entire unit test suite. It takes no arguments.
 
-The test application is built and run by running `clang -Werror -Wall scheduler_tests.c && a.out` from a command line equipped with clang (gcc may be substituted as appropriate).
+The test application is built and run by running `clang -Werror -Wall -Wextra scheduler_tests.c && a.out` from a command line equipped with clang (gcc may be substituted as appropriate).
 
 The test application includes `scheduler.c` with `SCHEDULER_STRICT` defined.

@@ -2,28 +2,28 @@
 
 #include <stdint.h>
 
+// Sorry about the member order, required for padding.
 struct scheduler_work {
-  // Sorry about the member order, required for padding.
-  void (*callback)(struct scheduler_work *); // Parameter. Must be non-NULL
+  void (*callback)(struct scheduler_work *); // Callback parameter. Must be non-NULL.
   struct scheduler_work *d5b53ac8ba_private;
   unsigned long a40ad7cc3a_private;
-  uint16_t delay_millis;    // Parameter. Callback interval in ms
+  uint16_t delay_millis;    // Desired callback interval in ms
 };
 
-// Call this once before using the rest of the API.
-// Calling this more than once will cause unwanted behaviour.
+// Call this before using any other part of the scheduler API.
+// It is illegal to call this more than once.
 void scheduler_init(void);
 
 // Insert a work unit to the schedule.
-// Parameters .callback and .delay_millis must be initialized to sane values.
-// Other members can be safely left uninitialized.
-// If the work unit is already scheduled, unwanted behaviour will result.
+// Members .callback and .delay_millis must be initialized.
+// It is illegal to add the same work unit twice.
 void scheduler_add(struct scheduler_work *unit);
 
 // Remove a work unit from the schedule.
-// If the work unit is not in the schedule, the call will trap.
+// It is illegal to attempt to remove a work unit that is not in the schedule.
 void scheduler_remove(struct scheduler_work *unit);
 
 // Turn control over to the scheduler.
 // This function will not return until/unless there are no jobs scheduled.
+// There's no way to call this wrong.
 void scheduler_run(void);
