@@ -1,6 +1,6 @@
-# µScheduler
+# Scheduler
 
-A simple, obviously-named work scheduler for microcontrollers.
+A simple scheduler for microcontrollers.
 
 ***
 
