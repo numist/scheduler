@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 // Build and run tests with: clang -Werror -Wall -g scheduler_tests.c && a.out
 
@@ -32,6 +33,35 @@ static int tests = 0;
 static uint32_t the_time_in_millis;
 static uint32_t calls_to_delay;
 
+struct _test_unit {
+  struct scheduler_work unit;
+  unsigned calls;
+  unsigned limit;
+};
+static void _test_unit_callback(struct scheduler_work *unit) {
+  struct _test_unit *test_unit = (struct _test_unit *)((uint8_t *)(unit) - offsetof(struct _test_unit, unit));
+  test_unit->calls++;
+  
+  if (unit->delay_millis > 0) {
+    test(the_time_in_millis % unit->delay_millis == 0);
+  } else if (test_unit->calls % 5 == 0) {
+    // Calls with 0 delay must take some amount of time!
+    the_time_in_millis++;
+  }
+  
+  if (test_unit->limit > 0) {
+    test(the_time_in_millis <= unit->delay_millis * test_unit->limit);
+    if (test_unit->calls >= test_unit->limit) {
+      scheduler_remove(unit);
+    }
+  }
+}
+static void _test_unit_callback_never(struct scheduler_work *unit __attribute__((unused))) {
+  test(false);
+}
+
+// TODO: test_before() should reset optimized_insert and anything else that can change
+
 // ///////////////////////////////////////////////////////////////////////// //
 // Black box tests
 // ///////////////////////////////////////////////////////////////////////// //
@@ -52,49 +82,40 @@ static void test_scheduler_empty(void) {
 // Test that the max allowed interval size works correctly
 //
 
-static int _test_scheduler_max_interval_calls = 0;
-static void _test_scheduler_max_interval_callback(struct scheduler_work *unit) {
-  _test_scheduler_max_interval_calls++;
-  if (_test_scheduler_max_interval_calls == 2) {
-    scheduler_remove(unit);
-  }
-}
 static void test_scheduler_max_interval(void) {
   the_time_in_millis = 0;
 
-  struct scheduler_work unit;
-  bzero(&unit, sizeof(struct scheduler_work));
-  unit.callback = _test_scheduler_max_interval_callback;
-  unit.delay_millis = UINT16_MAX;
-  scheduler_add(&unit);
+  struct _test_unit test;
+  test.unit.callback = _test_unit_callback;
+  test.unit.delay_millis = UINT16_MAX;
+  test.calls = 0;
+  test.limit = 2;
+
+  scheduler_add(&test.unit);
   scheduler_run();
   // Check that the callback happened only twice.
-  test(_test_scheduler_max_interval_calls == 2);
+  test(test.calls == test.limit);
   // Check that we did actually overflow correctly.
   test(the_time_in_millis != 0);
+  test(the_time_in_millis < UINT32_MAX / 2);
 }
 
 //
 // Test that the scheduler works properly when millis() overflows
 //
 
-static int _test_scheduler_overflow_calls = 0;
-static void _test_scheduler_overflow_callback(struct scheduler_work *unit) {
-  _test_scheduler_overflow_calls++;
-  if (_test_scheduler_overflow_calls == 2) {
-    scheduler_remove(unit);
-  }
-}
 static void test_scheduler_overflow(void) {
-  struct scheduler_work unit;
+  struct _test_unit test;
   const unsigned delay = 50;
   the_time_in_millis = -delay;
-  unit.callback = _test_scheduler_overflow_callback;
-  unit.delay_millis = delay;
-  scheduler_add(&unit);
+  test.unit.callback = _test_unit_callback;
+  test.unit.delay_millis = delay;
+  test.limit = 2;
+  test.calls = 0;
+  scheduler_add(&test.unit);
   scheduler_run();
   // Check that the callback happened only twice.
-  test(_test_scheduler_overflow_calls == 2);
+  test(test.calls == test.limit);
   // Check that we did actually overflow correctly.
   test(the_time_in_millis == delay);
 }
@@ -106,44 +127,27 @@ static void test_scheduler_overflow(void) {
 // 3 5 6 9 10 12 15
 // 1 2 1 1  2  1 1&2
 //
-static int _test_scheduler_fb_fizz_calls = 0;
-static int _test_scheduler_fb_buzz_calls = 0;
-static void _test_scheduler_fb_fizz_callback(struct scheduler_work *unit) {
-  _test_scheduler_fb_fizz_calls++;
-  test(the_time_in_millis % 3 == 0);
-  if (the_time_in_millis == 15) {
-    test(_test_scheduler_fb_fizz_calls == 5);
-    scheduler_remove(unit);
-  }
-  test(the_time_in_millis <= 15);
-}
-static void _test_scheduler_fb_buzz_callback(struct scheduler_work *unit) {
-  _test_scheduler_fb_buzz_calls++;
-  test(the_time_in_millis % 5 == 0);
-  if (the_time_in_millis == 15) {
-    test(_test_scheduler_fb_buzz_calls == 3);
-  }
-  if (the_time_in_millis == 30) {
-    test(_test_scheduler_fb_buzz_calls == 6);
-    scheduler_remove(unit);
-  }
-  test(the_time_in_millis <= 30);
-}
 static void test_scheduler_fb(void) {
   the_time_in_millis = 0;
   
-  struct scheduler_work fizz;
-  fizz.callback = _test_scheduler_fb_fizz_callback;
-  fizz.delay_millis = 3;
-  scheduler_add(&fizz);
+  struct _test_unit fizz;
+  fizz.unit.callback = _test_unit_callback;
+  fizz.unit.delay_millis = 3;
+  fizz.limit = 10;
+  fizz.calls = 0;
+  scheduler_add(&fizz.unit);
 
-  struct scheduler_work buzz;
-  buzz.callback = _test_scheduler_fb_buzz_callback;
-  buzz.delay_millis = 5;
-  scheduler_add(&buzz);
+  struct _test_unit buzz;
+  buzz.unit.callback = _test_unit_callback;
+  buzz.unit.delay_millis = 5;
+  buzz.limit = 6;
+  buzz.calls = 0;
+  scheduler_add(&buzz.unit);
 
   scheduler_run();
   
+  test(fizz.calls == fizz.limit);
+  test(buzz.calls == buzz.limit);
   test(the_time_in_millis == 30);
 }
 
@@ -151,41 +155,27 @@ static void test_scheduler_fb(void) {
 // Test two jobs that hvae the same delay.
 //
 
-static int _test_scheduler_ff_fizz_calls = 0;
-static int _test_scheduler_ff_fuzz_calls = 0;
-static void _test_scheduler_ff_fizz_callback(struct scheduler_work *unit) {
-  _test_scheduler_ff_fizz_calls++;
-  test(the_time_in_millis % 3 == 0);
-  if (the_time_in_millis == 15) {
-    test(_test_scheduler_ff_fizz_calls == 5);
-    scheduler_remove(unit);
-  }
-  test(the_time_in_millis <= 15);
-}
-static void _test_scheduler_ff_fuzz_callback(struct scheduler_work *unit) {
-  _test_scheduler_ff_fuzz_calls++;
-  test(the_time_in_millis % 3 == 0);
-  if (the_time_in_millis == 15) {
-    test(_test_scheduler_ff_fuzz_calls == 5);
-    scheduler_remove(unit);
-  }
-  test(the_time_in_millis <= 15);
-}
 static void test_scheduler_ff(void) {
   the_time_in_millis = 0;
   
-  struct scheduler_work fizz;
-  fizz.callback = _test_scheduler_ff_fizz_callback;
-  fizz.delay_millis = 3;
-  scheduler_add(&fizz);
+  struct _test_unit fizz;
+  fizz.unit.callback = _test_unit_callback;
+  fizz.unit.delay_millis = 3;
+  fizz.limit = 5;
+  fizz.calls = 0;
+  scheduler_add(&fizz.unit);
 
-  struct scheduler_work fuzz;
-  fuzz.callback = _test_scheduler_ff_fuzz_callback;
-  fuzz.delay_millis = 3;
-  scheduler_add(&fuzz);
+  struct _test_unit fuzz;
+  fuzz.unit.callback = _test_unit_callback;
+  fuzz.unit.delay_millis = 3;
+  fuzz.limit = 5;
+  fuzz.calls = 0;
+  scheduler_add(&fuzz.unit);
 
   scheduler_run();
   
+  test(fizz.calls == fizz.limit);
+  test(fuzz.calls == fuzz.limit);
   test(the_time_in_millis == 15);
 }
 
@@ -193,44 +183,34 @@ static void test_scheduler_ff(void) {
 // Test that one work unit with a delay of 0 does not starve out other work units
 //
 
-static int _test_scheduler_starve_fizz_calls = 0;
-static int _test_scheduler_starve_fuzz_calls = 0;
-static void _test_scheduler_starve_fizz_callback(struct scheduler_work *unit) {
-  _test_scheduler_starve_fizz_calls++;
-  
-  // Callbacks will always take time, this one takes 500ns
-  the_time_in_millis = _test_scheduler_starve_fizz_calls / 5;
-  
-  if (the_time_in_millis == 15) {
-    // test(_test_scheduler_starve_fizz_calls == 15);
+static struct _test_unit _test_scheduler_starve_fuzz;
+static void _test_scheduler_starve_callback(struct scheduler_work *unit) {
+  if (_test_scheduler_starve_fuzz.calls == _test_scheduler_starve_fuzz.limit) {
     scheduler_remove(unit);
+  } else {
+    _test_unit_callback(unit);
   }
-  test(the_time_in_millis <= 15);
-}
-static void _test_scheduler_starve_fuzz_callback(struct scheduler_work *unit) {
-  _test_scheduler_starve_fuzz_calls++;
-  test(the_time_in_millis % 3 == 0);
-  if (the_time_in_millis == 15) {
-    test(_test_scheduler_starve_fuzz_calls == 5);
-    scheduler_remove(unit);
-  }
-  test(the_time_in_millis <= 30);
 }
 static void test_scheduler_starve(void) {
   the_time_in_millis = 0;
   
-  struct scheduler_work fizz;
-  fizz.callback = _test_scheduler_starve_fizz_callback;
-  fizz.delay_millis = 0;
-  scheduler_add(&fizz);
+  struct _test_unit fizz;
+  fizz.unit.callback = _test_scheduler_starve_callback;
+  fizz.unit.delay_millis = 0;
+  fizz.limit = 0;
+  fizz.calls = 0;
+  scheduler_add(&fizz.unit);
 
-  struct scheduler_work fuzz;
-  fuzz.callback = _test_scheduler_starve_fuzz_callback;
-  fuzz.delay_millis = 3;
-  scheduler_add(&fuzz);
+  _test_scheduler_starve_fuzz.unit.callback = _test_unit_callback;
+  _test_scheduler_starve_fuzz.unit.delay_millis = 3;
+  _test_scheduler_starve_fuzz.limit = 5;
+  _test_scheduler_starve_fuzz.calls = 0;
+  scheduler_add(&_test_scheduler_starve_fuzz.unit);
 
   scheduler_run();
   
+  test(fizz.calls == 75);
+  test(_test_scheduler_starve_fuzz.limit == _test_scheduler_starve_fuzz.calls);
   test(the_time_in_millis == 15);
 }
 
@@ -239,50 +219,128 @@ static void test_scheduler_starve(void) {
 // Test that removing the last element of a two-job schedule works
 //
 
-static int _test_scheduler_remove_last_fizz_calls = 0;
-static void _test_scheduler_remove_last_fizz_callback(struct scheduler_work *unit) {
-  _test_scheduler_remove_last_fizz_calls++;
-  test(the_time_in_millis % 3 == 0);
-  if (the_time_in_millis == 15) {
-    test(_test_scheduler_remove_last_fizz_calls == 5);
-    scheduler_remove(unit);
-  }
-  test(the_time_in_millis <= 15);
-}
-static void _test_scheduler_remove_last_buzz_callback(struct scheduler_work *unit __attribute__((unused))) {
-  test(false);
-}
-static void test_scheduler_remove_last(void) {
+static void test_scheduler_remove_last_of_2(void) {
   the_time_in_millis = 0;
   
-  struct scheduler_work fizz;
-  fizz.callback = _test_scheduler_remove_last_fizz_callback;
-  fizz.delay_millis = 3;
-  scheduler_add(&fizz);
+  struct _test_unit fizz;
+  fizz.unit.callback = _test_unit_callback;
+  fizz.unit.delay_millis = 3;
+  fizz.limit = 5;
+  fizz.calls = 0;
+  scheduler_add(&fizz.unit);
 
-  struct scheduler_work buzz;
-  buzz.callback = _test_scheduler_remove_last_buzz_callback;
-  buzz.delay_millis = 5;
-  scheduler_add(&buzz);
+  struct _test_unit buzz;
+  buzz.unit.callback = _test_unit_callback_never;
+  buzz.unit.delay_millis = 5;
+  scheduler_add(&buzz.unit);
 
-  scheduler_remove(&buzz);
+  scheduler_remove(&buzz.unit);
 
   scheduler_run();
   
+  test(fizz.calls == fizz.limit);
   test(the_time_in_millis == 15);
 }
 
 //
-// TODO: Test that removing the last element of a three-job schedule works
+// Test removing the last element of a three-job schedule
 //
 
-//
-// TODO: explicitly test mid-insertion
-//
+static void test_scheduler_remove_last_of_3(void) {
+  struct _test_unit test_units[3];
+  the_time_in_millis = 0;
+  
+  test_units[0].unit.callback = _test_unit_callback;
+  test_units[0].unit.delay_millis = 1;
+  test_units[0].limit = 3 - 0;
+  test_units[0].calls = 0;
+  scheduler_add(&test_units[0].unit);
+  
+  test_units[1].unit.callback = _test_unit_callback;
+  test_units[1].unit.delay_millis = 2;
+  test_units[1].limit = 3 - 1;
+  test_units[1].calls = 0;
+  scheduler_add(&test_units[1].unit);
+  
+  test_units[2].unit.callback = _test_unit_callback_never;
+  test_units[2].unit.delay_millis = 3;
+  scheduler_add(&test_units[2].unit);
+  
+  scheduler_remove(&test_units[2].unit);
+  
+  scheduler_run();
+  
+  test(test_units[0].calls == test_units[0].limit);
+  test(test_units[1].calls == test_units[1].limit);
+  test(the_time_in_millis == 4);
+}
 
 //
-// TODO: explicitly test mid-deletion
+// Test mid-insertion
 //
+
+static void test_scheduler_insert_mid(void) {
+  struct _test_unit test_units[3];
+  the_time_in_millis = 0;
+  
+  test_units[0].unit.callback = _test_unit_callback;
+  test_units[0].unit.delay_millis = 1;
+  test_units[0].limit = 10;
+  test_units[0].calls = 0;
+  scheduler_add(&test_units[0].unit);
+  
+  test_units[1].unit.callback = _test_unit_callback;
+  test_units[1].unit.delay_millis = 4;
+  test_units[1].limit = 10;
+  test_units[1].calls = 0;
+  scheduler_add(&test_units[1].unit);
+  
+  test_units[2].unit.callback = _test_unit_callback;
+  test_units[2].unit.delay_millis = 9;
+  test_units[2].limit = 10;
+  test_units[2].calls = 0;
+  scheduler_add(&test_units[2].unit);
+      
+  scheduler_run();
+  
+  test(test_units[0].calls == test_units[0].limit);
+  test(test_units[1].calls == test_units[1].limit);
+  test(test_units[2].calls == test_units[2].limit);
+  test(the_time_in_millis == (10 * 9));
+}
+
+//
+// Test mid-deletion
+//
+
+static void test_scheduler_remove_mid(void) {
+  struct _test_unit test_units[3];
+  the_time_in_millis = 0;
+  
+  test_units[0].unit.callback = _test_unit_callback;
+  test_units[0].unit.delay_millis = 1;
+  test_units[0].limit = 5;
+  test_units[0].calls = 0;
+  scheduler_add(&test_units[0].unit);
+  
+  test_units[1].unit.callback = _test_unit_callback_never;
+  test_units[1].unit.delay_millis = 2;
+  scheduler_add(&test_units[1].unit);
+  
+  test_units[2].unit.callback = _test_unit_callback;
+  test_units[2].unit.delay_millis = 3;
+  test_units[2].limit = 5;
+  test_units[2].calls = 0;
+  scheduler_add(&test_units[2].unit);
+  
+  scheduler_remove(&test_units[1].unit);
+  
+  scheduler_run();
+  
+  test(test_units[0].calls == test_units[0].limit);
+  test(test_units[2].calls == test_units[2].limit);
+  test(the_time_in_millis == 15);
+}
 
 // ///////////////////////////////////////////////////////////////////////// //
 //
@@ -327,10 +385,72 @@ static void test_time_lt_time(void) {
 // TODO: test that 3 work units with the same interval always tail-insert
 //
 
+static void _test_scheduler_tail_insertion(void) {
+  const int test_count = 3;
+  struct _test_unit test_units[test_count];
+  the_time_in_millis = 0;
+
+  for (int i = 0; i < test_count; i++) {
+    test_units[i].unit.callback = _test_unit_callback;
+    test_units[i].unit.delay_millis = 50;
+    test_units[i].limit = 10;
+    test_units[i].calls = 0;
+    scheduler_add(&test_units[i].unit);
+  }
+      
+  scheduler_run();
+  
+  for (int i = 0; i < test_count; i++) {
+    test(test_units[i].calls == test_units[i].limit);
+  }
+  test(the_time_in_millis == (10 * 50));
+}
+static void test_scheduler_tail_insertion(void) {
+  // TODO: Reset profiler
+  _test_scheduler_tail_insertion();
+  // TODO: Verify profiler never took slow path
+}
 
 //
 // TODO: test that head.delay_millis results in optimized insertions with N 20ms work units and a single 1000ms work unit.
 //
+
+static void _test_scheduler_optimized_insertions(void) {
+  const int test_count = 5;
+  struct _test_unit test_units[test_count];
+  the_time_in_millis = 0;
+
+  for (int i = 0; i < test_count; i++) {
+    test_units[i].unit.callback = _test_unit_callback;
+    test_units[i].unit.delay_millis = 50;
+    test_units[i].limit = 10;
+    test_units[i].calls = 0;
+  }
+  
+  test_units[test_count - 1].unit.delay_millis = 550;
+  test_units[test_count - 1].limit = 1;
+
+  for (int i = 0; i < test_count; i++) {
+    scheduler_add(&test_units[i].unit);
+  }
+
+  scheduler_run();
+  
+  for (int i = 0; i < test_count; i++) {
+    test(test_units[i].calls == test_units[i].limit);
+  }
+  test(the_time_in_millis == 550);
+}
+static void test_scheduler_optimized_insertions(void) {
+  // TODO: reset profiler
+  _test_scheduler_optimized_insertions();
+  // TODO: Verify profiler took slow path
+  
+  // TODO: reset profiler
+  // TODO: calibrate optimized_insertions to 50ms
+  _test_scheduler_optimized_insertions();
+  // TODO: Verify profiler never took slow path
+}
 
 // ///////////////////////////////////////////////////////////////////////// //
 //
@@ -343,14 +463,22 @@ static void test_time_lt_time(void) {
 int main() {
   scheduler_init();
   
+  // Black box
   test_scheduler_empty();
   test_scheduler_max_interval();
   test_scheduler_overflow();
   test_scheduler_fb();
   test_scheduler_ff();
   test_scheduler_starve();
+  test_scheduler_remove_last_of_2();
+  test_scheduler_remove_last_of_3();
+  test_scheduler_insert_mid();
+  test_scheduler_remove_mid();
+
+  // White box
   test_time_lt_time();
-  test_scheduler_remove_last();
+  test_scheduler_tail_insertion();
+  test_scheduler_optimized_insertions();
   
   printf("\n%d failures in %d checks\n", failures, tests);
   return 0;
